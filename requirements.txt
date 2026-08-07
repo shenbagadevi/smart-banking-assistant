@@ -1,0 +1,5 @@
+ 
+# Dependencies:
+
+ uv add python-dotenv 
+ uv add fastapi
