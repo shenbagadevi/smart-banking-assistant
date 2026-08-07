@@ -3,3 +3,15 @@
 
  uv add python-dotenv 
  uv add fastapi
+
+  uv add docling
+
+  uv add langchain-openai langchain-core
+
+  uv add langchain-text-splitters
+
+  uv add langchain-postgres
+
+  uv add psycopg[binary] pgvector
+
+  uv add uvicorn
