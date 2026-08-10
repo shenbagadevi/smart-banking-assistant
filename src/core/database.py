@@ -21,9 +21,73 @@ def get_connection():
     )
 
 
+def get_or_create_document(
+    document_name: str,
+    source_path: str,
+) -> str:
+    """
+    Create the document record or return its existing ID.
+    """
+
+    connection = None
+
+    try:
+
+        connection = get_connection()
+
+        with connection.cursor() as cursor:
+
+            cursor.execute(
+                """
+                INSERT INTO knowledge_documents
+                (
+                    document_name,
+                    source_path
+                )
+                VALUES
+                (
+                    %s,
+                    %s
+                )
+                ON CONFLICT (document_name)
+                DO UPDATE SET
+                    uploaded_at = NOW()
+                RETURNING document_id
+                """,
+                (
+                    document_name,
+                    source_path,
+                ),
+            )
+
+            document_id = cursor.fetchone()[0]
+
+        connection.commit()
+
+        return str(document_id)
+
+    except Exception:
+
+        if connection:
+            connection.rollback()
+
+        logger.exception(
+            "Unable to register document '%s'.",
+            document_name,
+        )
+
+        raise
+
+    finally:
+
+        if connection:
+            connection.close()
+
+
 def insert_chunks(
     chunks: list[dict],
     embeddings: list[list[float]],
+    document_id: str,
 ) -> None:
     """
     Save document chunks into PostgreSQL.
@@ -47,6 +111,7 @@ def insert_chunks(
                     INSERT INTO knowledge_chunks
                     (
                         chunk_id,
+                        document_id,
                         document_name,
                         chunk_type,
                         content,
@@ -57,11 +122,12 @@ def insert_chunks(
                     )
                     VALUES
                     (
-                        %s,%s,%s,%s,%s,%s,%s,%s
+                        %s,%s,%s,%s,%s,%s,%s,%s,%s
                     )
                     """,
                     (
                         chunk["chunk_id"],
+                        document_id,
                         chunk["document_name"],
                         chunk["chunk_type"],
                         chunk["content"],

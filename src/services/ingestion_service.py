@@ -47,7 +47,10 @@ def ingest_document(file_path: Path) -> dict:
             len(chunks),
         )
 
-        stored_chunks = store_chunks(chunks)
+        stored_chunks = store_chunks(
+            chunks,
+            file_path,
+        )
 
         logger.info(
             "Successfully stored %d chunks.",

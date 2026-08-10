@@ -3,10 +3,10 @@ import base64
 import logging
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage
-
+from io import BytesIO
 from docling.document_converter import DocumentConverter
 
-from core.config import OPENAI_CHAT_MODEL, VISION_PROMPT
+from src.core.config import OPENAI_CHAT_MODEL, VISION_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -194,28 +194,49 @@ def extract_image_elements(document) -> list[dict]:
 
         if item.label != "picture":
             continue
+        try:
+            image = item.get_image(document)
 
-        image = item.get_image(document)
+            if image is None:
+                logger.warning(
+                    "Skipping image on page %s: image data unavailable.",
+                    getattr(item, "page_no", None),
+                )
+                continue
 
-        if image is None:
-            continue
+            # Convert PIL image into an actual PNG file in memory.
+            image_buffer = BytesIO()
+            image.save(image_buffer, format="PNG")
 
-        image_bytes = image.tobytes()
+            image_bytes = image_buffer.getvalue()
 
-        encoded = base64.b64encode(image_bytes).decode()
+            encoded = base64.b64encode(image_bytes).decode("utf-8")
 
-        description = describe_image(encoded)
+            description = describe_image(encoded)
 
-        images.append(
-            {
-                "content": description,
-                "content_type": "image",
-                "metadata": {
-                    "page": getattr(item, "page_no", None),
-                    "image_base64": encoded,
-                },
-            }
-        )
+            images.append(
+                {
+                    "content": description,
+                    "content_type": "image",
+                    "metadata": {
+                        "page": getattr(item, "page_no", None),
+                        "image_base64": encoded,
+                        "mime_type": "image/png",
+                    },
+                }
+            )
+
+            logger.info(
+                "Processed image on page %s.",
+                getattr(item, "page_no", None),
+            )
+
+        except Exception:
+            logger.exception(
+                "Failed to process image on page %s.",
+                getattr(item, "page_no", None),
+            )
+            raise
 
     logger.info("Extracted %d images.", len(images))
 

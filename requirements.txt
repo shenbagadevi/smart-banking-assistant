@@ -15,3 +15,7 @@
   uv add psycopg[binary] pgvector
 
   uv add uvicorn
+
+uv add python-multipart
+
+  uv run uvicorn main:app --reload

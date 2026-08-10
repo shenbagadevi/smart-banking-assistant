@@ -1,12 +1,12 @@
 import logging
 
 from langchain_openai import OpenAIEmbeddings
-
+from pathlib import Path
 from src.core.config import (
     EMBEDDING_BATCH_SIZE,
     OPENAI_EMBEDDING_MODEL,
 )
-from src.core.database import insert_chunks
+from src.core.database import insert_chunks, get_or_create_document
 
 logger = logging.getLogger(__name__)
 
@@ -15,19 +15,33 @@ embedding_model = OpenAIEmbeddings(
 )
 
 
-def store_chunks(chunks: list[dict]) -> int:
+def store_chunks(
+    chunks: list[dict],
+    file_path: Path,
+) -> int:
     """
-    Generate embeddings and store document chunks
-    in the knowledge base.
+    Generate embeddings and store document chunks.
     """
 
     if not chunks:
-
         logger.warning("No chunks found for storage.")
-
         return 0
 
     try:
+
+        document_name = chunks[0]["document_name"]
+
+        logger.info(
+            "Registering document '%s'.",
+            document_name,
+        )
+
+        document_id = get_or_create_document(document_name, file_path)
+
+        logger.info(
+            "Document registered successfully. document_id=%s",
+            document_id,
+        )
 
         logger.info(
             "Generating embeddings for %d chunks.",
@@ -41,6 +55,7 @@ def store_chunks(chunks: list[dict]) -> int:
         insert_chunks(
             chunks,
             embeddings,
+            document_id,
         )
 
         logger.info(

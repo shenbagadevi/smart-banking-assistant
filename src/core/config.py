@@ -45,8 +45,6 @@ TEXT_CHUNK_SIZE = 1500
 
 TEXT_CHUNK_OVERLAP = 300
 
-EMBEDDING_MODEL = "text-embedding-3-small"
-
 EMBEDDING_DIMENSION = 1536
 
 # Batch size for embedding requests
