@@ -1,3 +1,4 @@
+from collections import Counter
 from pathlib import Path
 import base64
 import logging
@@ -6,7 +7,7 @@ from langchain_core.messages import HumanMessage
 from io import BytesIO
 from docling.document_converter import DocumentConverter
 
-from src.core.config import OPENAI_CHAT_MODEL, VISION_PROMPT
+from src.core.config import OPENAI_CHAT_MODEL, VISION_PROMPT, IMAGE_DIRECTORY
 
 logger = logging.getLogger(__name__)
 
@@ -64,11 +65,19 @@ def parse_document(file_path: Path) -> list[dict]:
 
         parsed_elements.extend(extract_table_elements(document))
 
-        parsed_elements.extend(extract_image_elements(document))
+        parsed_elements.extend(extract_image_elements(document, file_path))
+
+        counts = Counter(
+            element["content_type"]
+            for element in parsed_elements
+        )
 
         logger.info(
-            "Extracted %d document elements.",
+            "PARSER SUMMARY | total=%d | text=%d | tables=%d | images=%d",
             len(parsed_elements),
+            counts["text"],
+            counts["table"],
+            counts["image"],
         )
 
         return parsed_elements
@@ -114,6 +123,13 @@ def extract_text_elements(document) -> list[dict]:
                     "section": getattr(item, "label", None),
                 },
             }
+        )
+
+    for element in elements:
+        logger.debug(
+            "TEXT EXTRACTED | page=%s | characters=%d",
+            element["metadata"].get("page"),
+            len(element["content"]),
         )
 
     logger.info("Extracted %d text elements.", len(elements))
@@ -175,12 +191,19 @@ def extract_table_elements(document) -> list[dict]:
             }
         )
 
+    for table in tables:
+        logger.info(
+            "TABLE EXTRACTED | page=%s | characters=%d",
+            table["metadata"].get("page"),
+            len(table["content"]),
+        )
+
     logger.info("Extracted %d tables.", len(tables))
 
     return tables
 
 
-def extract_image_elements(document) -> list[dict]:
+def extract_image_elements(document, file_path: Path) -> list[dict]:
     """
     Extract figures and charts.
 
@@ -212,6 +235,29 @@ def extract_image_elements(document) -> list[dict]:
 
             encoded = base64.b64encode(image_bytes).decode("utf-8")
 
+            image_directory = IMAGE_DIRECTORY / file_path.stem
+            image_directory.mkdir(
+                parents=True,
+                exist_ok=True,
+            )
+
+            image_number = len(images) + 1
+
+            image_path = image_directory / f"image_{image_number:03d}.png"
+
+            image.save(image_path, format="PNG")
+
+            if not image_path.exists():
+                raise FileNotFoundError(
+                    f"Image was not saved: {image_path}"
+                )
+
+            logger.info(
+                "IMAGE STORAGE VERIFIED | path=%s | size=%d bytes",
+                image_path,
+                image_path.stat().st_size,
+            )
+
             description = describe_image(encoded)
 
             images.append(
@@ -220,15 +266,18 @@ def extract_image_elements(document) -> list[dict]:
                     "content_type": "image",
                     "metadata": {
                         "page": getattr(item, "page_no", None),
-                        "image_base64": encoded,
+                        "image_path": str(image_path),
+                        # "image_base64": encoded,
                         "mime_type": "image/png",
                     },
                 }
             )
 
             logger.info(
-                "Processed image on page %s.",
+                "IMAGE EXTRACTED | page=%s | path=%s | vision_description=%s",
                 getattr(item, "page_no", None),
+                image_path,
+                bool(description),
             )
 
         except Exception:

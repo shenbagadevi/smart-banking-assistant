@@ -35,6 +35,8 @@ def get_or_create_document(
 
         connection = get_connection()
 
+        source_path = str(source_path)
+
         with connection.cursor() as cursor:
 
             cursor.execute(
@@ -118,11 +120,12 @@ def insert_chunks(
                         page_number,
                         section,
                         embedding,
-                        metadata
+                        metadata,
+                        image_path
                     )
                     VALUES
                     (
-                        %s,%s,%s,%s,%s,%s,%s,%s,%s
+                        %s,%s,%s,%s,%s,%s,%s,%s,%s,%s
                     )
                     """,
                     (
@@ -135,6 +138,7 @@ def insert_chunks(
                         chunk["section"],
                         embedding,
                         Json(chunk["metadata"]),
+                        chunk["metadata"].get("image_path"),
                     ),
                 )
 

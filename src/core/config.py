@@ -10,6 +10,8 @@ API_PREFIX = "/api/v1"
 
 # Root directory for uploaded documents
 UPLOAD_DIRECTORY = Path("data")
+IMAGE_DIRECTORY = Path("data/images")
+
 
 # Supported document types
 ALLOWED_FILE_EXTENSIONS = {".pdf", ".docx"}

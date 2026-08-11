@@ -1,4 +1,5 @@
 import logging
+from collections import Counter
 from pathlib import Path
 
 from src.ingestion.chunker import prepare_chunks
@@ -21,20 +22,51 @@ def ingest_document(file_path: Path) -> dict:
 
     """
 
-    logger.info("Document ingestion started.")
+    logger.info("=" * 80)
+    logger.info(
+        "DOCUMENT INGESTION STARTED | file=%s",
+        file_path.name,
+    )
+    logger.info("=" * 80)
 
     try:
 
         if not file_path.exists():
             raise FileNotFoundError(f"Document not found: {file_path}")
 
-        logger.info("Starting ingestion for document '%s'.", file_path.name)
+        logger.info(
+            "[1/5] File validation PASSED | path=%s | size=%d bytes",
+            file_path,
+            file_path.stat().st_size,
+        )
 
         parsed_elements = parse_document(file_path)
 
+        element_counts = Counter(
+            element["content_type"]
+            for element in parsed_elements
+        )
+
         logger.info(
-            "Successfully extracted %d document elements.",
+            "[2/5] PARSING COMPLETED | total_elements=%d | text=%d | tables=%d | images=%d",
             len(parsed_elements),
+            element_counts["text"],
+            element_counts["table"],
+            element_counts["image"],
+        )
+
+        pages = sorted(
+            {
+                element.get("metadata", {}).get("page")
+                for element in parsed_elements
+                if element.get("metadata", {}).get("page") is not None
+            }
+        )
+
+        logger.info(
+            "[2/5] PAGE COVERAGE | pages_found=%d | pages=%s",
+            len(pages),
+            pages,
         )
 
         chunks = prepare_chunks(
@@ -42,9 +74,17 @@ def ingest_document(file_path: Path) -> dict:
             document_name=file_path.name,
         )
 
+        chunk_counts = Counter(
+            chunk["chunk_type"]
+            for chunk in chunks
+        )
+
         logger.info(
-            "Prepared %d chunks for indexing.",
+            "[3/5] CHUNKING COMPLETED | total=%d | text=%d | tables=%d | images=%d",
             len(chunks),
+            chunk_counts["text"],
+            chunk_counts["table"],
+            chunk_counts["image"],
         )
 
         stored_chunks = store_chunks(
@@ -53,22 +93,41 @@ def ingest_document(file_path: Path) -> dict:
         )
 
         logger.info(
-            "Successfully stored %d chunks.",
+            "[4/5] STORAGE COMPLETED | expected=%d | stored=%d",
+            len(chunks),
             stored_chunks,
         )
 
-        logger.info("Document ingestion completed successfully.")
+        if stored_chunks != len(chunks):
+            raise RuntimeError(
+                f"Chunk count mismatch: "
+                f"expected={len(chunks)}, stored={stored_chunks}"
+            )
+
+        logger.info(
+            "[5/5] INGESTION VALIDATION PASSED | "
+            "document=%s | total_chunks=%d",
+            file_path.name,
+            stored_chunks,
+        )
+
+        logger.info("=" * 80)
+        logger.info("DOCUMENT INGESTION COMPLETED SUCCESSFULLY")
+        logger.info("=" * 80)
 
         return {
             "status": "success",
             "document_name": file_path.name,
             "chunks_ingested": stored_chunks,
+            "content_counts": dict(element_counts),
+            "chunk_counts": dict(chunk_counts),
+            "pages": pages,
         }
 
     except Exception:
 
         logger.exception(
-            "Document ingestion failed for '%s'.",
+            "DOCUMENT INGESTION FAILED | file=%s",
             file_path.name,
         )
 

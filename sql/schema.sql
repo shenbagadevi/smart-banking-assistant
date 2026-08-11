@@ -98,3 +98,6 @@ ON knowledge_chunks (chunk_type);
 
 CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_page
 ON knowledge_chunks (page_number);
+
+ALTER TABLE knowledge_chunks
+ADD COLUMN image_path TEXT;
