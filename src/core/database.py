@@ -108,6 +108,9 @@ def insert_chunks(
                 embeddings,
             ):
 
+                chunk["metadata"]["document_id"] = document_id
+                # chunk["metadata"]["embedding"] = embedding
+
                 cursor.execute(
                     """
                     INSERT INTO knowledge_chunks
@@ -117,7 +120,7 @@ def insert_chunks(
                         document_name,
                         chunk_type,
                         content,
-                        page_number,
+                        source_page,
                         section,
                         embedding,
                         metadata,
@@ -134,8 +137,8 @@ def insert_chunks(
                         chunk["document_name"],
                         chunk["chunk_type"],
                         chunk["content"],
-                        chunk["page"],
-                        chunk["section"],
+                        chunk.get("source_page"),
+                        chunk.get("section"),
                         embedding,
                         Json(chunk["metadata"]),
                         chunk["metadata"].get("image_path"),

@@ -28,6 +28,7 @@ def ingest_document(file_path: Path) -> dict:
         file_path.name,
     )
     logger.info("=" * 80)
+    document_name = file_path.name
 
     try:
 
@@ -42,24 +43,21 @@ def ingest_document(file_path: Path) -> dict:
 
         parsed_elements = parse_document(file_path)
 
-        element_counts = Counter(
-            element["content_type"]
-            for element in parsed_elements
-        )
+        element_counts = Counter(element["content_type"] for element in parsed_elements)
 
         logger.info(
             "[2/5] PARSING COMPLETED | total_elements=%d | text=%d | tables=%d | images=%d",
             len(parsed_elements),
-            element_counts["text"],
-            element_counts["table"],
-            element_counts["image"],
+            element_counts.get("text", 0),
+            element_counts.get("table", 0),
+            element_counts.get("image_caption", 0),
         )
 
         pages = sorted(
             {
-                element.get("metadata", {}).get("page")
+                element.get("metadata", {}).get("source_page")
                 for element in parsed_elements
-                if element.get("metadata", {}).get("page") is not None
+                if element.get("metadata", {}).get("source_page") is not None
             }
         )
 
@@ -74,17 +72,14 @@ def ingest_document(file_path: Path) -> dict:
             document_name=file_path.name,
         )
 
-        chunk_counts = Counter(
-            chunk["chunk_type"]
-            for chunk in chunks
-        )
+        chunk_counts = Counter(chunk["chunk_type"] for chunk in chunks)
 
         logger.info(
             "[3/5] CHUNKING COMPLETED | total=%d | text=%d | tables=%d | images=%d",
             len(chunks),
-            chunk_counts["text"],
-            chunk_counts["table"],
-            chunk_counts["image"],
+            chunk_counts.get("text", 0),
+            chunk_counts.get("table", 0),
+            chunk_counts.get("image_caption", 0),
         )
 
         stored_chunks = store_chunks(
@@ -105,8 +100,7 @@ def ingest_document(file_path: Path) -> dict:
             )
 
         logger.info(
-            "[5/5] INGESTION VALIDATION PASSED | "
-            "document=%s | total_chunks=%d",
+            "[5/5] INGESTION VALIDATION PASSED | " "document=%s | total_chunks=%d",
             file_path.name,
             stored_chunks,
         )
@@ -115,13 +109,58 @@ def ingest_document(file_path: Path) -> dict:
         logger.info("DOCUMENT INGESTION COMPLETED SUCCESSFULLY")
         logger.info("=" * 80)
 
+        # Attempt to reuse any existing document_id present in element or chunk metadata
+        document_id = None
+        try:
+            for el in parsed_elements:
+                docid = el.get("metadata", {}).get("document_id")
+                if docid:
+                    document_id = docid
+                    break
+        except Exception:
+            logger.debug("No document_id found in parsed elements metadata")
+
+        if not document_id:
+            try:
+                for ch in chunks:
+                    docid = ch.get("metadata", {}).get("document_id")
+                    if docid:
+                        document_id = docid
+                        break
+            except Exception:
+                logger.debug("No document_id found in chunk metadata")
+
+        if not document_id:
+            logger.warning(
+                "document_id not found in metadata; returning None for document_id"
+            )
+
         return {
             "status": "success",
-            "document_name": file_path.name,
-            "chunks_ingested": stored_chunks,
-            "content_counts": dict(element_counts),
-            "chunk_counts": dict(chunk_counts),
-            "pages": pages,
+            "document": {
+                "document_name": document_name,
+                "document_id": document_id,
+                "file_type": file_path.suffix,
+            },
+            "content_extraction": {
+                "elements_extracted": len(parsed_elements),
+                "content_counts": element_counts,
+            },
+            "chunking": {"total_chunks": len(chunks), "chunk_counts": chunk_counts},
+            "metadata_quality": {
+                "chunks_with_heading": sum(
+                    1 for c in chunks if c.get("metadata", {}).get("heading")
+                ),
+                "chunks_with_section": sum(
+                    1 for c in chunks if c.get("metadata", {}).get("section")
+                ),
+                "chunks_without_metadata": sum(
+                    1
+                    for c in chunks
+                    if not c.get("metadata", {}).get("heading")
+                    and not c.get("metadata", {}).get("section")
+                ),
+            },
         }
 
     except Exception:

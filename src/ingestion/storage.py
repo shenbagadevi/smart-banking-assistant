@@ -7,7 +7,10 @@ from src.core.config import (
     EMBEDDING_BATCH_SIZE,
     OPENAI_EMBEDDING_MODEL,
 )
+from src.retrieval.rag_tool import get_vector_store
 from src.core.database import insert_chunks, get_or_create_document
+from langchain_core.documents import Document
+
 
 logger = logging.getLogger(__name__)
 
@@ -44,47 +47,40 @@ def store_chunks(
             document_id,
         )
 
-        chunk_counts = Counter(
-            chunk["chunk_type"]
-            for chunk in chunks
-        )
+        chunk_counts = Counter(chunk["chunk_type"] for chunk in chunks)
 
         logger.info(
             "CONTENT READY FOR EMBEDDING | "
-            "text=%d | tables=%d | images=%d | total=%d",
-            chunk_counts["text"],
-            chunk_counts["table"],
-            chunk_counts["image"],
+            "text=%d | tables=%d | image_captions=%d | total=%d",
+            chunk_counts.get("text", 0),
+            chunk_counts.get("table", 0),
+            chunk_counts.get("image_caption", 0),
             len(chunks),
         )
 
         image_chunks = [
-            chunk
-            for chunk in chunks
-            if chunk["chunk_type"] == "image"
+            chunk for chunk in chunks if chunk["chunk_type"] == "image_caption"
         ]
 
         for chunk in image_chunks:
 
-            image_path = chunk["metadata"].get(
-                "image_path"
-            )
+            image_path = chunk["metadata"].get("image_path")
 
             if not image_path:
                 raise RuntimeError(
-                    f"Image chunk {chunk['chunk_id']} "
-                    "does not have image_path."
+                    f"Image chunk {chunk['chunk_id']} " "does not have image_path."
                 )
 
             if not Path(image_path).exists():
-                raise FileNotFoundError(
-                    f"Image file does not exist: {image_path}"
-                )
+                raise FileNotFoundError(f"Image file does not exist: {image_path}")
 
         logger.info(
             "IMAGE CHUNK VALIDATION PASSED | images=%d",
             len(image_chunks),
         )
+
+        # validate metadata before generating embeddings / storage
+        validate_chunk_metadata(chunks)
 
         logger.info(
             "Generating embeddings for %d chunks.",
@@ -94,6 +90,7 @@ def store_chunks(
         embeddings = generate_embeddings(chunks)
 
         logger.info("Embeddings generated successfully.")
+        store_embeddings(chunks)
 
         logger.info(
             "STORAGE VALIDATION | chunks=%d | embeddings=%d",
@@ -102,9 +99,7 @@ def store_chunks(
         )
 
         if len(chunks) != len(embeddings):
-            raise RuntimeError(
-                "Cannot store chunks: chunk/embedding count mismatch."
-            )
+            raise RuntimeError("Cannot store chunks: chunk/embedding count mismatch.")
 
         logger.info(
             "DATABASE INSERT STARTED | document_id=%s | chunks=%d",
@@ -138,6 +133,31 @@ def store_chunks(
         raise
 
 
+def validate_chunk_metadata(chunks: list[dict]) -> None:
+    """
+    Validate required metadata before storing chunks.
+    """
+    try:
+        for chunk in chunks:
+            required_fields = [
+                "document_name",
+                "chunk_type",
+                "content",
+            ]
+            for field in required_fields:
+                if not chunk.get(field):
+                    raise ValueError(f"Missing metadata field {field}")
+            if chunk.get("source_page") is None:
+                logger.warning(
+                    "SOURCE PAGE MISSING | chunk=%s",
+                    chunk.get("chunk_id"),
+                )
+        logger.info("CHUNK METADATA VALIDATION PASSED | chunks=%d", len(chunks))
+    except Exception:
+        logger.exception("Chunk metadata validation failed")
+        raise
+
+
 def generate_embeddings(
     chunks: list[dict],
 ) -> list[list[float]]:
@@ -166,13 +186,9 @@ def generate_embeddings(
             EMBEDDING_BATCH_SIZE,
         ):
 
-            batch = contents[
-                index:index + EMBEDDING_BATCH_SIZE
-            ]
+            batch = contents[index : index + EMBEDDING_BATCH_SIZE]
 
-            batch_number = (
-                index // EMBEDDING_BATCH_SIZE
-            ) + 1
+            batch_number = (index // EMBEDDING_BATCH_SIZE) + 1
 
             logger.info(
                 "EMBEDDING BATCH STARTED | batch=%d | chunks=%d-%d | batch_size=%d",
@@ -182,9 +198,7 @@ def generate_embeddings(
                 len(batch),
             )
 
-            batch_embeddings = (
-                embedding_model.embed_documents(batch)
-            )
+            batch_embeddings = embedding_model.embed_documents(batch)
 
             if len(batch_embeddings) != len(batch):
                 raise RuntimeError(
@@ -212,14 +226,12 @@ def generate_embeddings(
         invalid_embeddings = [
             index + 1
             for index, embedding in enumerate(embeddings)
-            if not embedding
-            or len(embedding) != 1536
+            if not embedding or len(embedding) != 1536
         ]
 
         if invalid_embeddings:
             raise RuntimeError(
-                "Invalid embeddings found at chunks: "
-                f"{invalid_embeddings}"
+                "Invalid embeddings found at chunks: " f"{invalid_embeddings}"
             )
 
         logger.info(
@@ -233,8 +245,46 @@ def generate_embeddings(
 
     except Exception:
 
-        logger.exception(
-            "Embedding generation failed."
+        logger.exception("Embedding generation failed.")
+
+        raise
+
+
+def store_embeddings(chunks):
+
+    try:
+
+        vector_store = get_vector_store("RerankingRAGVectorStore")
+
+        documents = []
+
+        for chunk in chunks:
+
+            documents.append(
+                Document(
+                    page_content=chunk["content"],
+                    metadata={
+                        "chunk_id": chunk["chunk_id"],
+                        "document_name": chunk["document_name"],
+                        "chunk_type": chunk["chunk_type"],
+                        "source_page": chunk.get("source_page"),
+                        "section": chunk.get("section"),
+                        "heading": chunk.get("heading"),
+                        **chunk.get("metadata", {}),
+                    },
+                )
+            )
+
+        logger.info(
+            "VECTOR DOCUMENT CONVERSION COMPLETED | documents=%d", len(documents)
         )
+
+        vector_store.add_documents(documents)
+
+        logger.info("Stored %s vectors", len(documents))
+
+    except Exception:
+
+        logger.exception("Vector storage failed")
 
         raise
