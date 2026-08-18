@@ -7,7 +7,7 @@ from src.core.config import (
     ALLOWED_FILE_EXTENSIONS,
     UPLOAD_DIRECTORY,
 )
-from src.services.ingestion_service import ingest_document
+from src.api.v1.services.ingestion_service import ingest_document
 
 import logging
 

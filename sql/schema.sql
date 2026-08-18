@@ -47,13 +47,14 @@ CREATE TABLE IF NOT EXISTS knowledge_chunks (
                         chunk_type IN (
                             'text',
                             'table',
-                            'image'
+                            'image',
+                            'image_caption'
                         )
                     ),
 
     content         TEXT NOT NULL,
 
-    page_number     INTEGER,
+    source_page     INTEGER,
 
     section         TEXT,
 
@@ -96,5 +97,8 @@ ON knowledge_chunks (chunk_type);
 -- Useful for citations and document navigation
 -- ============================================================
 
-CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_page
-ON knowledge_chunks (page_number);
+CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_source_page
+ON knowledge_chunks (source_page);
+
+ALTER TABLE knowledge_chunks
+ADD COLUMN image_path TEXT;
