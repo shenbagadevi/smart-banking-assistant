@@ -44,39 +44,63 @@ def _extract_source_metadata(docs: List[Doc]) -> Dict[str, Any]:
     """Extract document, page and policy citation metadata from retrieved documents."""
 
     try:
+        # Build structured policy citation list and canonical document/page
         document_names = set()
-        pages = set()
         policy_citations = []
 
         for doc in docs:
             metadata = doc.metadata or {}
 
-            document_name = metadata.get("document_name")
+            document_name = metadata.get("document_name") or metadata.get(
+                "metadata", {}
+            ).get("document_name")
             if document_name:
                 document_names.add(str(document_name))
 
+            # Prefer explicit integer-like page numbers
             page = (
                 metadata.get("source_page")
                 or metadata.get("page_no")
                 or metadata.get("page")
             )
+            try:
+                if page is not None:
+                    page_int = int(page)
+                else:
+                    page_int = None
+            except Exception:
+                page_int = None
 
-            if page is not None:
-                pages.add(str(page))
+            section = metadata.get("section") or metadata.get("heading") or ""
 
-            citation = (
-                metadata.get("policy_citation")
-                or metadata.get("policy_reference")
-                or metadata.get("citation")
-            )
-
-            if citation:
+            if document_name:
+                citation = {
+                    "document": str(document_name),
+                    "section": section or "",
+                    "heading": metadata.get("heading") or "",
+                }
+                if page_int is not None:
+                    citation["page"] = page_int
                 policy_citations.append(citation)
 
+        # dedupe citations by (document, section, heading, page)
+        seen = set()
+        deduped = []
+        for c in policy_citations:
+            key = (c.get("document"), c.get("section"), c.get("heading"), c.get("page"))
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(c)
+
+        # document_name aggregate (comma-separated) only for backward compatibility
+        docname_agg = ", ".join(sorted(document_names)) if document_names else None
+
+        # page_no aggregate omitted in new contract; individual citations include page when available
         return {
-            "document_name": ", ".join(sorted(document_names)) or None,
-            "page_no": ", ".join(sorted(pages)) or None,
-            "policy_citations": list(dict.fromkeys(policy_citations)),
+            "document_name": docname_agg,
+            "page_no": None,
+            "policy_citations": deduped,
         }
 
     except Exception:
@@ -86,6 +110,12 @@ def _extract_source_metadata(docs: List[Doc]) -> Dict[str, Any]:
             "page_no": None,
             "policy_citations": [],
         }
+
+
+def any_trigger_match(query_text, triggers):
+    query_text = query_text.lower()
+
+    return any(trigger.lower() in query_text for trigger in triggers)
 
 
 def extract_query_filters(query: str) -> dict:

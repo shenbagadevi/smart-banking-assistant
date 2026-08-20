@@ -6,11 +6,11 @@ from pathlib import Path
 from src.core.config import (
     EMBEDDING_BATCH_SIZE,
     OPENAI_EMBEDDING_MODEL,
+    EMBEDDING_DIMENSION,
 )
 from src.api.v1.tools.rag_tool import get_vector_store
-from src.core.database import insert_chunks, get_or_create_document
+from src.core.database import insert_chunks, get_or_create_document, get_connection
 from langchain_core.documents import Document
-
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +47,10 @@ def store_chunks(
             document_id,
         )
 
+        # Do NOT delete existing document chunks yet; perform duplicate detection
+        # against existing content_hash values first to avoid removing rows
+        # that would prevent duplicate detection on re-ingest.
+
         chunk_counts = Counter(chunk["chunk_type"] for chunk in chunks)
 
         logger.info(
@@ -82,49 +86,122 @@ def store_chunks(
         # validate metadata before generating embeddings / storage
         validate_chunk_metadata(chunks)
 
+        # Duplicate detection: query DB only for incoming content_hash values
+        # and filter out chunks that are already present BEFORE generating
+        # embeddings to avoid unnecessary API calls.
+        existing_hashes = set()
+        try:
+            incoming_hashes = [
+                (chunk.get("metadata") or {}).get("content_hash")
+                for chunk in chunks
+                if (chunk.get("metadata") or {}).get("content_hash")
+            ]
+            incoming_hashes = list({h for h in incoming_hashes if h})
+
+            if incoming_hashes:
+                placeholders = ",".join(["%s"] * len(incoming_hashes))
+                query = f"SELECT metadata->>'content_hash' FROM knowledge_chunks WHERE metadata->>'content_hash' IN ({placeholders})"
+                with get_connection() as conn:
+                    with conn.cursor() as cursor:
+                        cursor.execute(query, tuple(incoming_hashes))
+                        rows = cursor.fetchall()
+                existing_hashes = set(r[0] for r in rows if r and r[0])
+            else:
+                existing_hashes = set()
+        except Exception:
+            logger.exception(
+                "Failed to load existing content hashes for duplicate detection"
+            )
+
+        indices_to_store = []
+        for i, chunk in enumerate(chunks):
+            chash = (chunk.get("metadata") or {}).get("content_hash")
+            if chash and chash in existing_hashes:
+                logger.info(
+                    "Skipping existing chunk (content_hash present) | chunk_id=%s | content_hash=%s",
+                    chunk.get("chunk_id"),
+                    chash,
+                )
+                continue
+            indices_to_store.append(i)
+
+        filtered_chunks = [chunks[i] for i in indices_to_store]
+
+        duplicates_found = len(chunks) - len(filtered_chunks)
+
         logger.info(
-            "Generating embeddings for %d chunks.",
+            "STORAGE_FILTER | total_chunks=%d | new_chunks=%d | skipped=%d",
             len(chunks),
+            len(filtered_chunks),
+            duplicates_found,
         )
 
-        embeddings = generate_embeddings(chunks)
-
-        logger.info("Embeddings generated successfully.")
-        store_embeddings(chunks)
-
+        # Ingestion pipeline summary (before embedding generation)
         logger.info(
-            "STORAGE VALIDATION | chunks=%d | embeddings=%d",
+            "INGEST_PIPELINE: raw_chunks=%d duplicate_chunks=%d embedding_chunks=%d stored_chunks=%d",
             len(chunks),
-            len(embeddings),
+            duplicates_found,
+            len(filtered_chunks),
+            0,
         )
 
-        if len(chunks) != len(embeddings):
-            raise RuntimeError("Cannot store chunks: chunk/embedding count mismatch.")
-
+        # Generate embeddings only for the new chunks
         logger.info(
-            "DATABASE INSERT STARTED | document_id=%s | chunks=%d",
-            document_id,
-            len(chunks),
+            "Generating embeddings for %d new chunks.",
+            len(filtered_chunks),
         )
 
-        insert_chunks(
-            chunks,
-            embeddings,
-            document_id,
-        )
+        embeddings = generate_embeddings(filtered_chunks) if filtered_chunks else []
 
-        logger.info(
-            "DATABASE INSERT COMPLETED | document_id=%s | chunks=%d",
-            document_id,
-            len(chunks),
-        )
+        logger.info("Embeddings generated successfully for new chunks.")
 
-        logger.info(
-            "Stored %d chunks successfully.",
-            len(chunks),
-        )
+        if filtered_chunks:
+            # Store vectors in the vector store (precomputed embeddings passed)
+            store_embeddings(filtered_chunks, embeddings=embeddings)
 
-        return len(chunks)
+            logger.info(
+                "DATABASE INSERT STARTED | document_id=%s | chunks=%d",
+                document_id,
+                len(filtered_chunks),
+            )
+
+            insert_chunks(
+                filtered_chunks,
+                embeddings,
+                document_id,
+            )
+
+            logger.info(
+                "DATABASE INSERT COMPLETED | document_id=%s | chunks=%d",
+                document_id,
+                len(filtered_chunks),
+            )
+
+            logger.info(
+                "Stored %d chunks successfully.",
+                len(filtered_chunks),
+            )
+
+            # Final ingestion pipeline summary with stored count
+            logger.info(
+                "INGEST_PIPELINE: raw_chunks=%d duplicate_chunks=%d embedding_chunks=%d stored_chunks=%d",
+                len(chunks),
+                duplicates_found,
+                len(filtered_chunks),
+                len(filtered_chunks),
+            )
+
+            return len(filtered_chunks)
+        else:
+            logger.info("No new chunks to store after duplicate filtering.")
+            logger.info(
+                "INGEST_PIPELINE: raw_chunks=%d duplicate_chunks=%d embedding_chunks=%d stored_chunks=%d",
+                len(chunks),
+                duplicates_found,
+                0,
+                0,
+            )
+            return 0
 
     except Exception:
 
@@ -226,7 +303,7 @@ def generate_embeddings(
         invalid_embeddings = [
             index + 1
             for index, embedding in enumerate(embeddings)
-            if not embedding or len(embedding) != 1536
+            if not embedding or len(embedding) != EMBEDDING_DIMENSION
         ]
 
         if invalid_embeddings:
@@ -235,10 +312,10 @@ def generate_embeddings(
             )
 
         logger.info(
-            "EMBEDDING VALIDATION PASSED | "
-            "chunks=%d | embeddings=%d | dimension=1536",
+            "EMBEDDING VALIDATION PASSED | " "chunks=%d | embeddings=%d | dimension=%d",
             total_chunks,
             len(embeddings),
+            EMBEDDING_DIMENSION,
         )
 
         return embeddings
@@ -250,7 +327,7 @@ def generate_embeddings(
         raise
 
 
-def store_embeddings(chunks):
+def store_embeddings(chunks, embeddings: list[list[float]] | None = None):
 
     try:
 
@@ -279,7 +356,27 @@ def store_embeddings(chunks):
             "VECTOR DOCUMENT CONVERSION COMPLETED | documents=%d", len(documents)
         )
 
-        vector_store.add_documents(documents)
+        # If embeddings were precomputed, prefer passing them to the
+        # vector store to avoid re-computing. Not all vector store
+        # implementations accept `embeddings=`; try once and fall back
+        # to calling without embeddings if the store rejects the param.
+        try:
+            if embeddings is not None and all(embeddings):
+                try:
+                    vector_store.add_documents(documents, embeddings=embeddings)
+                except TypeError:
+                    # store does not accept precomputed embeddings via this
+                    # method; fall back to add_documents without embeddings.
+                    logger.info(
+                        "Vector store does not accept embeddings param; falling back."
+                    )
+                    vector_store.add_documents(documents)
+            else:
+                vector_store.add_documents(documents)
+        except Exception:
+            # If vector store fails for any reason, raise after logging.
+            logger.exception("Vector store add_documents failed")
+            raise
 
         logger.info("Stored %s vectors", len(documents))
 

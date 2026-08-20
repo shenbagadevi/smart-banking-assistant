@@ -133,14 +133,20 @@ def build_workflow():
     workflow.add_conditional_edges(
         "router",
         lambda s: s.get("route"),
-        {"RAG": "vector_search", "SQL": "nl2sql", "HYBRID": "parallel_retrieval"},
+        {
+            "RAG": "vector_search",
+            "SQL": "nl2sql",
+            "HYBRID": "parallel_retrieval",
+            "CHAT": "generate_answer",
+        },
     )
     workflow.add_edge("vector_search", "rerank")
     workflow.add_edge("rerank", "generate_answer")
     workflow.add_edge("parallel_retrieval", "rerank")
-    # After generation, evaluate; if should_retry -> retry retrieval path, else save
-    workflow.add_edge("generate_answer", "evaluate")
     workflow.add_edge("nl2sql", "generate_answer")
+
+    # Route generation to evaluation first, then evaluation decides save vs retry.
+    workflow.add_edge("generate_answer", "evaluate")
 
     workflow.add_conditional_edges(
         "evaluate",

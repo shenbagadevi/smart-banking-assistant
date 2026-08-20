@@ -44,6 +44,64 @@ def validate_sql(sql: str) -> bool:
             )
             return False
 
+    # Basic schema-aware validation: ensure referenced tables/columns appear
+    # in the database schema text to avoid executing SQL with unknown columns.
+    try:
+        db = get_sql_database()
+        schema_text = str(db.get_table_info() or "").lower()
+        sql_body = sql.strip().lower()
+
+        # Find referenced table names from FROM and JOIN clauses
+        tables = set()
+        for m in re.finditer(r"\bfrom\s+([a-z_][\w]*)", sql_body):
+            tables.add(m.group(1))
+        for m in re.finditer(r"\bjoin\s+([a-z_][\w]*)", sql_body):
+            tables.add(m.group(1))
+
+        # If any referenced table is not present in schema_text, reject
+        for t in tables:
+            if t and t not in schema_text:
+                logger.warning("SQL references unknown table=%s", t)
+                return False
+
+        # Extract the SELECT clause and verify columns appear in schema_text
+        sel_match = re.search(r"select\s+(.*?)\s+from\s", sql_body, flags=re.S)
+        if sel_match:
+            cols_part = sel_match.group(1)
+            # split by commas and clean tokens
+            cols = [c.strip() for c in cols_part.split(",") if c.strip()]
+            for c in cols:
+                # remove common SQL wrappers and aliases
+                c = re.sub(r"\b(as)\b.*", "", c)
+                c = re.sub(r"[()\"]", "", c)
+                # take last identifier after dot (table.column)
+                parts = [p for p in re.split(r"\s+", c) if p]
+                token = parts[0] if parts else c
+                if "." in token:
+                    token = token.split(".")[-1]
+                token = token.strip()
+                # ignore literal numbers
+                if re.match(r"^\d+$", token):
+                    continue
+                # ignore function calls like count(*), sum(...)
+                token = re.sub(r"[^a-z0-9_]", "", token)
+                if not token:
+                    continue
+                if token not in schema_text and token not in (
+                    "count",
+                    "sum",
+                    "avg",
+                    "min",
+                    "max",
+                    "distinct",
+                ):
+                    logger.warning("SQL references unknown column/token=%s", token)
+                    return False
+
+    except Exception:
+        logger.exception("Schema-aware SQL validation failed; rejecting as unsafe")
+        return False
+
     return True
 
 
@@ -130,7 +188,7 @@ def execute_sql(sql: str):
         logger.info("SQL execution completed")
         logger.info("SQL result=%s", result)
 
-        return str(result)
+        return result
 
     except Exception:
         logger.exception("SQL execution failed")

@@ -5,6 +5,10 @@ from uuid import uuid4
 from src.api.v1.schemas.query_schema import QueryRequest
 from src.api.v1.services.query_service import process_query
 from src.api.v1.services.stream_service import stream_response
+from src.api.v1.services.stream_service import request_cancel
+from src.api.v1.services.query_service import normalize_api_response
+import logging
+import json
 
 router = APIRouter(tags=["Smart Banking Assistant"])
 
@@ -23,19 +27,40 @@ def query_assistant(request: QueryRequest):
             correlation_id=correlation_id,
         )
 
-        return {
-            "query": request.query,
-            "answer": response.get("answer"),
-            "query_path": response.get("query_path"),
-            "document_name": response.get("document_name"),
-            "page_no": response.get("page_no"),
-            "policy_citations": response.get("policy_citations"),
-            "sql_query_executed": response.get("sql_query_executed"),
-            "retry_count": response.get("retry_count", 0),
-            "confidence_score": response.get("confidence_score"),
-            "correlation_id": correlation_id,
-            "langsmith_trace_id": response.get("trace_id"),
-        }
+        logger = logging.getLogger(__name__)
+
+        def generator():
+            try:
+                # stream answer tokens (SSE formatted)
+                for token in stream_response(response.get("answer", "")):
+                    yield token
+
+                # indicate done and then emit metadata as SSE
+                yield "data: [DONE]\n\n"
+
+                metadata = normalize_api_response(response)
+                metadata["correlation_id"] = (
+                    correlation_id or metadata.get("correlation_id") or ""
+                )
+                metadata["langsmith_trace_id"] = (
+                    response.get("trace_id") or metadata.get("langsmith_trace_id") or ""
+                )
+                metadata["query"] = request.query
+                # include timing metrics when available
+                if response.get("total_time") is not None:
+                    metadata["total_time"] = response.get("total_time")
+
+                # Emit metadata JSON as SSE data block
+                yield f"data: {json.dumps(metadata)}\n\n"
+
+            except Exception as e:
+                logger.exception("Streaming generator failed: %s", e)
+                yield f"data: [ERROR] Streaming failed: {str(e)}\n\n"
+
+        headers = {"Cache-Control": "no-cache", "Connection": "keep-alive"}
+        return StreamingResponse(
+            generator(), media_type="text/event-stream", headers=headers
+        )
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -50,15 +75,57 @@ def query_assistant_stream(request: QueryRequest):
         if not request.query or not request.query.strip():
             raise HTTPException(status_code=400, detail="Query cannot be empty")
         # For streaming we still call process_query to initialize and then stream tokens
+        # For streaming, invoke graph but stream tokens as they are generated.
+        # process_query will synchronously start LangGraph which may produce
+        # a partial answer (graph nodes may stream into the response object). We
+        # then stream the textual answer tokens followed by a final metadata
+        # JSON chunk so the UI can display sources.
         response = process_query(
             query=request.query,
             user_id=request.user_id,
             correlation_id=correlation_id,
         )
+
+        logger = logging.getLogger(__name__)
+
+        def generator():
+            try:
+                for token in stream_response(
+                    response.get("answer", ""), correlation_id=correlation_id
+                ):
+                    yield token
+
+                yield "data: [DONE]\n\n"
+
+                metadata = normalize_api_response(response)
+                metadata["correlation_id"] = (
+                    correlation_id or metadata.get("correlation_id") or ""
+                )
+                metadata["langsmith_trace_id"] = (
+                    response.get("trace_id") or metadata.get("langsmith_trace_id") or ""
+                )
+                metadata["query"] = request.query
+
+                yield f"data: {json.dumps(metadata)}\n\n"
+            except Exception as e:
+                logger.exception("Streaming generator failed: %s", e)
+                yield f"data: [ERROR] Streaming failed: {str(e)}\n\n"
+
+        headers = {"Cache-Control": "no-cache", "Connection": "keep-alive"}
         return StreamingResponse(
-            stream_response(response.get("answer", "")),
-            media_type="text/event-stream",
+            generator(), media_type="text/event-stream", headers=headers
         )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/query/cancel")
+def cancel_query(correlation_id: str):
+    try:
+        if not correlation_id:
+            raise HTTPException(status_code=400, detail="correlation_id required")
+        request_cancel(correlation_id)
+        return {"cancelled": True, "correlation_id": correlation_id}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

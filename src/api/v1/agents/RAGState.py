@@ -5,6 +5,7 @@ class RAGState(TypedDict, total=False):
     """
     Shared state passed between LangGraph nodes.
     """
+
     query: str
     original_query: str
     current_query: str
@@ -31,6 +32,12 @@ class RAGState(TypedDict, total=False):
     document_name: Optional[str]
     page_no: Optional[str]
     policy_citations: List[Any]
+
+    # alias for compatibility with HYBRID processing
+    retrieved_documents: List[Any]
+
+    # Conversation history stored as a list of {'role': 'user'|'assistant', 'content': str}
+    conversation_history: List[Dict[str, Any]]
 
     retry_count: int
     confidence_score: float

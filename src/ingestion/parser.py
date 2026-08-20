@@ -43,6 +43,11 @@ from src.core.config import (
     DOCLING_LIGHT_MODE,
     TABLES_INHERIT_HEADINGS,
 )
+from src.ingestion.metadata_enrichment import (
+    canonical_product_name,
+    identify_product_category,
+    canonical_loan_type,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -124,68 +129,27 @@ def _infer_product_metadata(
     if "northstar" in normalized:
         metadata["bank"] = "NorthStar"
 
-    rules = [
-        {
-            "key": "home_loan",
-            "patterns": [r"\bhome loan\b", r"\bhome loans\b"],
-            "category": "loan",
-            "loan_type": "home_loan",
-            "product_name": "Home Loan",
-        },
-        {
-            "key": "personal_loan",
-            "patterns": [r"\bpersonal loan\b", r"\bpersonal loans\b"],
-            "category": "loan",
-            "loan_type": "personal_loan",
-            "product_name": "Personal Loan",
-        },
-        {
-            "key": "vehicle_loan",
-            "patterns": [r"\bcar loan\b", r"\bcar loans\b", r"\bvehicle loan\b"],
-            "category": "loan",
-            "loan_type": "vehicle_loan",
-            "product_name": "Vehicle Loan",
-        },
-        {
-            "key": "credit_card",
-            "patterns": [r"\bcredit card\b", r"\bcredit cards\b"],
-            "category": "card",
-            "loan_type": None,
-            "product_name": "Credit Card",
-        },
-    ]
+    # Use canonical helpers for safe mapping. These return None if unclear.
+    product_name = canonical_product_name(normalized)
+    product_category = identify_product_category(normalized)
+    loan_type = canonical_loan_type(normalized)
 
-    matches = []
-    for rule in rules:
-        if any(re.search(pattern, normalized) for pattern in rule["patterns"]):
-            matches.append(rule)
+    # Only populate when we have confident mappings.
+    if product_name:
+        metadata["product_name"] = product_name
+    if product_category:
+        metadata["product_category"] = product_category
+    if loan_type:
+        metadata["loan_type"] = loan_type
 
-    if len(matches) > 1:
+    if any((product_name, product_category, loan_type)):
         logger.info(
-            "ELEMENT PRODUCT INFERENCE | element_id=%s | detected_product=None | confidence=0.0 | reason=multiple_conflicting_product_matches:%s",
+            "ELEMENT PRODUCT INFERENCE | element_id=%s | product_name=%s | product_category=%s | loan_type=%s",
             element_id,
-            ",".join(rule["key"] for rule in matches),
+            product_name,
+            product_category,
+            loan_type,
         )
-        return metadata
-
-    if not matches:
-        logger.info(
-            "ELEMENT PRODUCT INFERENCE | element_id=%s | detected_product=None | confidence=0.0 | reason=no_strong_product_keywords_in_content",
-            element_id,
-        )
-        return metadata
-
-    match = matches[0]
-    metadata["product_category"] = match["category"]
-    metadata["loan_type"] = match.get("loan_type")
-    metadata["product_name"] = match["product_name"]
-
-    logger.info(
-        "ELEMENT PRODUCT INFERENCE | element_id=%s | detected_product=%s | confidence=high | reason=explicit_keyword_match:%s",
-        element_id,
-        metadata["product_name"],
-        match["key"],
-    )
 
     return metadata
 
@@ -246,9 +210,15 @@ def _markdown_from_table_rows(
         f"| {' | '.join(cleaned_headers)} |",
         f"| {' | '.join('---' for _ in cleaned_headers)} |",
     ]
+    prev_row = None
     for row in rows:
         safe_row = [_clean_table_cell(cell) for cell in row]
+        # Collapse consecutive identical rows which sometimes appear due to
+        # dataframe/html export artifacts.
+        if prev_row is not None and safe_row == prev_row:
+            continue
         lines.append(f"| {' | '.join(safe_row)} |")
+        prev_row = safe_row
     return "\n".join(lines)
 
 
@@ -334,9 +304,14 @@ def parse_document(file_path: Path) -> list[dict]:
 
         logger.info("Parsing document '%s'.", file_path.name)
 
+        # Attempt DOCX -> PDF conversion to preserve page provenance when possible.
+        try:
+            converted = convert_docx_to_pdf(file_path)
+        except Exception:
+            converted = file_path
         converter = _create_document_converter()
-        # Pass DOCX directly to Docling to preserve headings and avoid DOCX->PDF conversion.
-        result = converter.convert(str(file_path))
+        # Use converted path (may be same as input) so Docling can extract pages.
+        result = converter.convert(str(converted))
 
         document = result.document
 
@@ -363,6 +338,42 @@ def parse_document(file_path: Path) -> list[dict]:
                     "product_name": inferred.get("product_name"),
                 }
             )
+
+        # Document-level inheritance: if a single product_name appears
+        # in >=60% of product-identified elements, propagate it to
+        # elements that lack explicit product metadata (without
+        # overriding explicit tags).
+        product_names = [
+            e.get("metadata", {}).get("product_name") for e in parsed_elements
+        ]
+        product_counts = Counter(p for p in product_names if p)
+        total_tagged = sum(product_counts.values())
+        if total_tagged:
+            most_common, count = product_counts.most_common(1)[0]
+            if count / total_tagged >= 0.6:
+                dominant = most_common
+                dominant_category = identify_product_category(dominant.lower())
+                logger.info(
+                    "DOCUMENT-LEVEL INFERENCE | dominant_product=%s | category=%s | count=%d | total_tagged=%d",
+                    dominant,
+                    dominant_category,
+                    count,
+                    total_tagged,
+                )
+                for e in parsed_elements:
+                    meta = e.setdefault("metadata", {})
+                    if not meta.get("product_name"):
+                        meta["product_name"] = dominant
+                    if not meta.get("product_category") and dominant_category:
+                        meta["product_category"] = dominant_category
+
+        # Map/normalize section names where possible
+        for e in parsed_elements:
+            meta = e.setdefault("metadata", {})
+            section_val = meta.get("section") or meta.get("heading")
+            mapped = _map_section_from_text(section_val) if section_val else None
+            if mapped:
+                meta["section"] = mapped
 
         counts = Counter(element["content_type"] for element in parsed_elements)
 
@@ -462,6 +473,26 @@ def _get_page_number(item):
         return "unknown"
 
 
+def _map_section_from_text(text: str) -> str | None:
+    """Map freeform heading/section text to canonical section names."""
+    if not text:
+        return None
+    t = text.lower()
+    if any(k in t for k in ("interest", "rate", "apr", "tenure", "tenure")):
+        return "Interest Rate Structure"
+    if any(k in t for k in ("eligib", "eligibility", "who can apply", "minimum")):
+        return "Eligibility Criteria"
+    if any(k in t for k in ("fee", "charge", "commission", "penalt")):
+        return "Fees and Charges"
+    if any(k in t for k in ("document", "required", "documents required", "papers")):
+        return "Documents Required"
+    if any(k in t for k in ("benefit", "benefits", "feature", "features")):
+        return "Benefits"
+    if any(k in t for k in ("complain", "escalat", "customer service", "support")):
+        return "Complaint Escalation Process"
+    return None
+
+
 def _looks_like_heading(text: str) -> bool:
     """
     Detect headings from DOCX converted text.
@@ -549,7 +580,10 @@ def extract_all_elements(document, file_path: Path) -> list[dict]:
     """
     elements = []
     current_heading = None
+    parent_heading = None
     current_section = None
+    current_subsection = None
+    current_product = None
     document_order = 0
 
     try:
@@ -560,21 +594,84 @@ def extract_all_elements(document, file_path: Path) -> list[dict]:
 
             # Update heading/section hierarchy based on Docling labels.
             if item.label == "title":
+                parent_heading = current_heading
                 current_heading = item_text or current_heading
+                # reset lower levels when top-level title appears
                 current_section = None
-                logger.debug("Heading updated | heading=%s", current_heading)
-            elif item.label in {
-                "section_header",
-                "heading",
-                "subtitle",
-                "subsection_header",
-            }:
+                current_subsection = None
+                logger.debug(
+                    "Heading updated | heading=%s | parent=%s",
+                    current_heading,
+                    parent_heading,
+                )
+            elif item.label == "section_header":
+                # section headers are treated as parent-level under title
+                parent_heading = current_heading or parent_heading
                 current_section = item_text or current_section
-                logger.debug("Section updated | section=%s", current_section)
+                current_subsection = None
+                logger.debug(
+                    "Section updated | section=%s | parent=%s",
+                    current_section,
+                    parent_heading,
+                )
+            elif item.label in {"heading", "subtitle", "subsection_header"}:
+                # heading/subsection are lower-level contexts
+                current_subsection = item_text or current_subsection
+                if not current_section:
+                    current_section = item_text or current_section
+                logger.debug(
+                    "Subsection updated | subsection=%s | section=%s",
+                    current_subsection,
+                    current_section,
+                )
             elif item.label == "text" and _looks_like_heading(item_text):
-                current_section = item_text
-                current_heading = item_text
-                logger.info("INFERRED HEADING FROM TEXT | heading=%s", item_text)
+                # Promote inferred heading to subsection/section depending on depth
+                if not current_section:
+                    current_section = item_text
+                else:
+                    current_subsection = item_text
+                logger.info(
+                    "INFERRED HEADING FROM TEXT | heading=%s | section=%s",
+                    item_text,
+                    current_section,
+                )
+
+            # Detect product headings and maintain product context
+            try:
+                # Normalize short heading labels for product detection
+                heading_candidate = (
+                    ((current_section or current_heading or current_subsection) or "")
+                    .strip()
+                    .lower()
+                )
+                for prod in (
+                    "home loan",
+                    "home loans",
+                    "fixed deposit",
+                    "fixed deposits",
+                    "credit card",
+                    "credit cards",
+                    "personal loan",
+                    "personal loans",
+                ):
+                    if prod in heading_candidate:
+                        # normalize product name
+                        if "home" in prod:
+                            current_product = "Home Loan"
+                        elif "fixed" in prod:
+                            current_product = "Fixed Deposit"
+                        elif "credit" in prod:
+                            current_product = "Credit Card"
+                        elif "personal" in prod:
+                            current_product = "Personal Loan"
+                        logger.info(
+                            "PRODUCT CONTEXT SET | product=%s | detected_from=%s",
+                            current_product,
+                            heading_candidate,
+                        )
+                        break
+            except Exception:
+                logger.exception("Product context detection failed")
 
             # Text-like elements
             if item.label in {
@@ -593,13 +690,24 @@ def extract_all_elements(document, file_path: Path) -> list[dict]:
                             text[:80],
                         )
                         continue
+                    page_val = _get_page_number(item)
                     metadata = {
-                        "source_page": _get_page_number(item),
+                        "source_page": page_val,
+                        "page_number": page_val,
                         "section": (
                             current_section if current_section else current_heading
                         ),
+                        "sub_section": current_subsection,
                         "heading": (current_heading if current_heading else None),
+                        "parent_heading": parent_heading,
+                        "product": current_product,
+                        "product_category": (
+                            identify_product_category((current_product or "").lower())
+                            if current_product
+                            else None
+                        ),
                         "document_order": document_order,
+                        "source_type": file_path.suffix.lower().lstrip("."),
                     }
                     elements.append(
                         {
@@ -664,11 +772,22 @@ def extract_all_elements(document, file_path: Path) -> list[dict]:
                         heading_val = None
                         section_val = None
 
+                    page_val = _get_page_number(item)
                     metadata = {
-                        "source_page": _get_page_number(item),
+                        "source_page": page_val,
+                        "page_number": page_val,
                         "heading": heading_val,
                         "section": section_val,
+                        "sub_section": current_subsection,
+                        "parent_heading": parent_heading,
+                        "product": current_product,
+                        "product_category": (
+                            identify_product_category((current_product or "").lower())
+                            if current_product
+                            else None
+                        ),
                         "document_order": document_order,
+                        "source_type": file_path.suffix.lower().lstrip("."),
                     }
                     elements.append(
                         {
@@ -714,14 +833,25 @@ def extract_all_elements(document, file_path: Path) -> list[dict]:
                         or f"[Image on page {_get_page_number(item)}]"
                     )
 
+                    page_val = _get_page_number(item)
                     metadata = {
-                        "source_page": _get_page_number(item),
+                        "source_page": page_val,
+                        "page_number": page_val,
                         "heading": current_heading or current_section,
+                        "sub_section": current_subsection,
                         "section": current_section or current_heading,
+                        "parent_heading": parent_heading,
+                        "product": current_product,
+                        "product_category": (
+                            identify_product_category((current_product or "").lower())
+                            if current_product
+                            else None
+                        ),
                         "image_path": str(image_path),
                         "image_ref": str(image_path),
                         "mime_type": "image/png",
                         "document_order": document_order,
+                        "source_type": file_path.suffix.lower().lstrip("."),
                     }
 
                     elements.append(

@@ -6,10 +6,21 @@ from src.core.config import settings
 
 
 class RouteDecision(BaseModel):
-
     route: Literal["RAG", "SQL", "HYBRID"]
 
     reason: str
+
+
+class IntentDecision(BaseModel):
+    """Structured intent decision used by the router LLM.
+
+    route: one of CHAT, SQL, RAG, HYBRID, MEMORY
+    """
+
+    route: Literal["CHAT", "SQL", "RAG", "HYBRID", "MEMORY"]
+
+    reason: str | None = None
+
 
 def evaluation_route(state):
     """

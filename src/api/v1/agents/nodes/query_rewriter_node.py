@@ -21,9 +21,10 @@ def query_rewriter_node(state: RAGState) -> RAGState:
         next_attempt = rewrite_attempt + 1
 
         logger.info(
-            "Query rewrite triggered: original_query=%s rewrite_attempt=%s",
+            "RETRY START | original_query=%s | rewrite_attempt=%s | current_retry_count=%s",
             original_query,
             rewrite_attempt,
+            state.get("retry_count", 0),
         )
 
         llm = _get_llm()
@@ -71,10 +72,13 @@ Requirements:
             final_queries,
         )
 
+        # Mark the current retrieval query and preserve the original user query
         return {
             **state,
             "original_query": original_query,
+            "user_query": state.get("user_query") or original_query,
             "current_query": current_query,
+            "retrieval_query": current_query,
             "rewrite_attempt": next_attempt,
             "rewritten_queries": rewritten_queries,
             "retrieval_attempts": list(state.get("retrieval_attempts") or [])

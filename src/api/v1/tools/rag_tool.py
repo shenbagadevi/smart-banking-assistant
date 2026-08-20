@@ -62,6 +62,9 @@ def get_embeddings():
         raise
 
 
+_VECTOR_STORE_CACHE = {}
+
+
 def get_vector_store(collection_name: str = "RerankingRAGVectorStore"):
     """Return a PGVector-backed vector store.
 
@@ -72,12 +75,19 @@ def get_vector_store(collection_name: str = "RerankingRAGVectorStore"):
             raise ValueError("PG_CONNECTION_STRING is not set")
         from langchain_postgres import PGVector
 
-        return PGVector(
+        # Cache vector store instances per collection name to avoid
+        # re-initializing client/connection on every call.
+        if collection_name in _VECTOR_STORE_CACHE:
+            return _VECTOR_STORE_CACHE[collection_name]
+
+        store = PGVector(
             embeddings=get_embeddings(),
             collection_name=collection_name,
             connection=PG_VECTOR_CONNECTION,
             use_jsonb=True,
         )
+        _VECTOR_STORE_CACHE[collection_name] = store
+        return store
         # return PGVector(
         #     collection_name=collection_name,
         #     connection=PG_VECTOR_CONNECTION,
@@ -206,10 +216,13 @@ def vector_search(
                     Document(
                         page_content=content,
                         metadata={
+                            "chunk_id": chunk_id,
                             "document_name": document_name,
                             "source_page": source_page,
                             "chunk_type": chunk_type,
-                            "metadata": doc_metadata,
+                            "section": section,
+                            "image_path": image_path,
+                            **doc_metadata,
                         },
                     )
                 )
@@ -217,24 +230,117 @@ def vector_search(
             logger.info("FTS fallback retrieved %s docs", len(docs))
             return docs
 
-        store = get_vector_store(collection_name or "RerankingRAGVectorStore")
+        try:
+            store = get_vector_store(collection_name or "RerankingRAGVectorStore")
 
-        logger.info("Searching collection=%s query=%s", collection_name, query)
+            logger.info("Searching collection=%s query=%s", collection_name, query)
 
-        search_kwargs = {"k": k}
+            search_kwargs = {"k": k}
 
-        if metadata_filter:
-            search_kwargs["filter"] = metadata_filter
+            if metadata_filter:
+                search_kwargs["filter"] = metadata_filter
 
-        docs = store.similarity_search_with_score(query, **search_kwargs)
+            docs_with_scores = store.similarity_search_with_score(
+                query, **search_kwargs
+            )
 
-        logger.info("Retrieved raw docs=%s", len(docs))
+            logger.info("Retrieved raw docs=%s", len(docs_with_scores))
 
-        for doc, score in docs[:3]:
+            results = []
+            for doc, score in docs_with_scores:
+                try:
+                    meta = getattr(doc, "metadata", {}) or {}
+                    # attach score for downstream logging/reranking
+                    meta["vector_score"] = float(score)
+                    doc.metadata = meta
+                except Exception:
+                    logger.exception("Failed attaching vector_score to doc metadata")
+                results.append(doc)
 
-            logger.info("score=%s metadata=%s", score, doc.metadata)
+            # Log top candidates concisely
+            for r in docs_with_scores[:5]:
+                d, sc = r
+                logger.info(
+                    "VECTOR_CANDIDATE | score=%.6f | id=%s | document=%s | section=%s",
+                    sc,
+                    (d.metadata or {}).get("chunk_id") or "-",
+                    (d.metadata or {}).get("document_name"),
+                    (d.metadata or {}).get("section"),
+                )
 
-        return [doc for doc, score in docs]
+            return results
+        except Exception:
+            # Vector store failed; fall back to FTS-based retrieval so the system still works.
+            logger.exception(
+                "Vector store unavailable; falling back to FTS for query=%s", query
+            )
+            # reuse the FTS fallback from above (DEMO_MODE case)
+            fts_query = _build_fts_query(query)
+            if not fts_query:
+                return []
+
+            with get_connection() as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT
+                            chunk_id,
+                            document_name,
+                            chunk_type,
+                            content,
+                            source_page,
+                            section,
+                            metadata,
+                            image_path
+                        FROM knowledge_chunks
+                        WHERE to_tsvector('english', content) @@ to_tsquery('english', %s)
+                        ORDER BY ts_rank(to_tsvector('english', content), to_tsquery('english', %s)) DESC
+                        LIMIT %s
+                        """,
+                        (fts_query, fts_query, k),
+                    )
+                    rows = cursor.fetchall()
+
+            docs: list[Document] = []
+            for row in rows:
+                (
+                    chunk_id,
+                    document_name,
+                    chunk_type,
+                    content,
+                    source_page,
+                    section,
+                    metadata,
+                    image_path,
+                ) = row
+                doc_metadata = metadata or {}
+                doc_metadata.update(
+                    {
+                        "chunk_id": chunk_id,
+                        "document_name": document_name,
+                        "chunk_type": chunk_type,
+                        "source_page": source_page,
+                        "section": section,
+                        "image_path": image_path,
+                    }
+                )
+                docs.append(
+                    Document(
+                        page_content=content,
+                        metadata={
+                            "chunk_id": chunk_id,
+                            "document_name": document_name,
+                            "source_page": source_page,
+                            "chunk_type": chunk_type,
+                            "section": section,
+                            "image_path": image_path,
+                            **doc_metadata,
+                        },
+                    )
+                )
+
+            logger.info("FTS fallback retrieved %s docs", len(docs))
+            return docs
 
     except Exception:
         logger.exception("Vector search failed")

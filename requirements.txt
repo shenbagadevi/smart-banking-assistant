@@ -21,3 +21,26 @@ uv add python-dotenv fastapi docling langchain-openai langchain-core langchain-t
 
 # Local run command:
 # uv run uvicorn main:app --reload
+
+
+uv add mem0ai guardrails-ai
+
+guardrails configure
+guardrails hub install hub://guardrails/guardrails_pii
+guardrails hub install hub://guardrails/toxic_language
+
+
+https://guardrailsai.com/hub
+https://guardrailsai.com/hub/keys
+
+
+(reranking-rag-plus) PS C:\agentic_ai_course\reranking_rag_plus> guardrails configure
+Enable anonymous metrics reporting? [Y/n]: n
+Do you wish to use remote inferencing? [Y/n]: y
+
+Enter API Key below 👉 You can find your API Key at https://guardrailsai.com/hub/keys
+
+API Key: ey
+
+Sign up at https://app.mem0.ai
+API Keys → create a key (starts with m0-)
