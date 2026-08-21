@@ -21,6 +21,13 @@ def save_memory_node(state: RAGState) -> RAGState:
             )
             return state
 
+        if state.get("guardrail_blocked") or state.get("cancelled"):
+            logger.info(
+                "Skipping memory save for cancelled or blocked request user=%s",
+                state.get("user_id"),
+            )
+            return state
+
         user_id = state.get("user_id")
         if not user_id:
             logger.info("Skipping memory save because no user_id was provided")

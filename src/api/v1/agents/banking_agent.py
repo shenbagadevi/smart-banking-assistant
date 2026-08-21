@@ -16,6 +16,9 @@ from src.api.v1.agents.nodes.generate_answer_node import generate_answer_node
 from src.api.v1.agents.nodes.evaluate_answer_node import evaluate_answer_node
 from src.api.v1.agents.nodes.query_rewriter_node import query_rewriter_node
 from src.api.v1.agents.nodes.save_memory_node import save_memory_node
+from src.api.v1.agents.nodes.input_guardrail_node import input_guardrail_node
+from src.api.v1.agents.nodes.output_guardrail_node import output_guardrail_node
+from src.api.v1.agents.nodes.memory_filter_node import memory_filter_node
 from src.api.v1.agents.agents_config import evaluation_route
 
 import logging
@@ -117,6 +120,7 @@ logger = logging.getLogger(__name__)
 
 def build_workflow():
     workflow = StateGraph(RAGState)
+    workflow.add_node("input_guardrail", input_guardrail_node)
     workflow.add_node("recall_memory", recall_memory_node)
     workflow.add_node("router", router_node)
     workflow.add_node("vector_search", vector_search_node)
@@ -124,11 +128,14 @@ def build_workflow():
     workflow.add_node("parallel_retrieval", parallel_retrieval_node)
     workflow.add_node("rerank", rerank_node)
     workflow.add_node("generate_answer", generate_answer_node)
+    workflow.add_node("output_guardrail", output_guardrail_node)
     workflow.add_node("evaluate", evaluate_answer_node)
     workflow.add_node("query_rewriter", query_rewriter_node)
+    workflow.add_node("memory_filter", memory_filter_node)
     workflow.add_node("save_memory", save_memory_node)
 
-    workflow.set_entry_point("recall_memory")
+    workflow.set_entry_point("input_guardrail")
+    workflow.add_edge("input_guardrail", "recall_memory")
     workflow.add_edge("recall_memory", "router")
     workflow.add_conditional_edges(
         "router",
@@ -138,25 +145,27 @@ def build_workflow():
             "SQL": "nl2sql",
             "HYBRID": "parallel_retrieval",
             "CHAT": "generate_answer",
+            "SAVE_MEMORY": "memory_filter",
+            "RECALL_MEMORY": "recall_memory",
         },
     )
     workflow.add_edge("vector_search", "rerank")
     workflow.add_edge("rerank", "generate_answer")
     workflow.add_edge("parallel_retrieval", "rerank")
     workflow.add_edge("nl2sql", "generate_answer")
-
-    # Route generation to evaluation first, then evaluation decides save vs retry.
-    workflow.add_edge("generate_answer", "evaluate")
+    workflow.add_edge("generate_answer", "output_guardrail")
+    workflow.add_edge("output_guardrail", "evaluate")
 
     workflow.add_conditional_edges(
         "evaluate",
         evaluation_route,
         {
             "query_rewriter": "query_rewriter",
-            "save_memory": "save_memory",
+            "save_memory": "memory_filter",
         },
     )
     workflow.add_edge("query_rewriter", "vector_search")
+    workflow.add_edge("memory_filter", "save_memory")
     workflow.add_edge("save_memory", END)
 
     return workflow

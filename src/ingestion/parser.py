@@ -6,7 +6,6 @@ import logging
 import re
 import subprocess
 import os
-from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage
 from io import BytesIO
 import importlib
@@ -35,7 +34,6 @@ except Exception:  # pragma: no cover
     pdfplumber = None
 
 from src.core.config import (
-    OPENAI_CHAT_MODEL,
     VISION_PROMPT,
     IMAGE_DIRECTORY,
     DOCX_CONVERTER,
@@ -43,6 +41,7 @@ from src.core.config import (
     DOCLING_LIGHT_MODE,
     TABLES_INHERIT_HEADINGS,
 )
+from src.core.llm_factory import get_llm
 from src.ingestion.metadata_enrichment import (
     canonical_product_name,
     identify_product_category,
@@ -51,9 +50,7 @@ from src.ingestion.metadata_enrichment import (
 
 logger = logging.getLogger(__name__)
 
-vision_model = ChatOpenAI(
-    model=OPENAI_CHAT_MODEL,
-)
+vision_model = get_llm()
 
 
 def _create_document_converter() -> DocumentConverter:

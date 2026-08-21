@@ -1,8 +1,8 @@
 import logging, re
-from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 
 from src.api.v1.tools.rag_tool import get_sql_database
+from src.core.llm_factory import get_llm as build_llm
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +19,7 @@ BLOCKED_KEYWORDS = [
 
 
 def get_llm():
-    return ChatOpenAI()
+    return build_llm()
 
 
 def validate_sql(sql: str) -> bool:

@@ -45,18 +45,16 @@ STOP_WORDS = {
 load_dotenv()
 
 # Environment-backed configuration
-MODEL = os.getenv("OPENAI_EMBEDDING_MODEL")
-API_KEY = os.getenv("OPENAI_API_KEY")
 PG_VECTOR_CONNECTION = os.getenv("PG_VECTOR_CONNECTION")
 PG_RDBMS_CONNECTION = os.getenv("PG_RDBMS_CONNECTION_STRING")
 
 
 def get_embeddings():
-    """Return an embeddings object for the configured model."""
+    """Return an embeddings object for the configured provider."""
     try:
-        from langchain_openai import OpenAIEmbeddings
+        from src.core.embedding_factory import get_embeddings as build_embeddings
 
-        return OpenAIEmbeddings(model=MODEL, api_key=API_KEY)
+        return build_embeddings()
     except Exception:
         logger.exception("Unable to create embeddings client")
         raise

@@ -1,8 +1,20 @@
-from typing import Any, Dict
+import asyncio
 import logging
+import time
+from typing import Any, Dict
 
 from src.api.v1.agents.banking_agent import get_graph
-from src.core.guardrails import validate_query
+from src.api.v1.services.execution_registry import (
+    cancel_request,
+    register_request,
+    unregister_request,
+)
+from src.core.guardrails import (
+    detect_pii,
+    detect_prompt_injection,
+    mask_sensitive_text,
+    validate_query,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +36,19 @@ def process_query(
         user_id,
         correlation_id,
     )
+
+    if detect_prompt_injection(query):
+        return {
+            "answer": "I cannot process requests that attempt to bypass security controls.",
+            "query_path": "guardrail",
+            "document_name": None,
+            "page_no": None,
+            "policy_citations": [],
+            "sql_query_executed": None,
+            "retry_count": 0,
+            "confidence_score": 0.0,
+            "trace_id": correlation_id,
+        }
 
     if not validate_query(query):
         return {
@@ -50,20 +75,19 @@ def process_query(
         },
     }
     result: Dict[str, Any] = {}
-    import time
-
     start_time = time.time()
+    sanitized_query = mask_sensitive_text(query)
     try:
-        # Mem0 requires a user_id; include initial empty context fields expected by the graph
         payload = {
-            "query": query,
-            "user_query": query,
-            "retrieval_query": query,
+            "query": sanitized_query,
+            "user_query": sanitized_query,
+            "retrieval_query": sanitized_query,
             "original_query": query,
             "user_id": user_id or "",
             "correlation_id": thread_id,
+            "request_id": correlation_id,
             "memory_context": "",
-            "conversation_history": [{"role": "user", "content": query}],
+            "conversation_history": [{"role": "user", "content": sanitized_query}],
             "retrieved_docs": [],
             "reranked_docs": [],
             "sql_results": [],
@@ -77,12 +101,58 @@ def process_query(
             "is_valid": False,
             "should_retry": False,
             "trace_id": thread_id,
-            "query_path": "rag",
+            "query_path": None,
+            "guardrail_blocked": False,
+            "input_guardrail_passed": True,
+            "output_guardrail_passed": False,
+            "pii_detected": bool(detect_pii(query)),
+            "sanitized_query": sanitized_query,
         }
-        result = graph.invoke(payload, config=config)
-        answer = (result.get("response") or {}).get(
-            "answer"
-        ) or f"Processed query: {query}"
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop is not None:
+            task = loop.create_task(
+                asyncio.to_thread(graph.invoke, payload, config=config)
+            )
+            register_request(correlation_id, task)
+            try:
+                result = task.result()
+            except asyncio.CancelledError:
+                logger.warning("Request cancelled: correlation_id=%s", correlation_id)
+                unregister_request(correlation_id)
+                return {
+                    "answer": "Request cancelled.",
+                    "query_path": "cancelled",
+                    "document_name": None,
+                    "page_no": None,
+                    "policy_citations": [],
+                    "sql_query_executed": None,
+                    "retry_count": 0,
+                    "confidence_score": 0.0,
+                    "trace_id": correlation_id,
+                    "cancelled": True,
+                }
+            finally:
+                unregister_request(correlation_id)
+        else:
+            result = graph.invoke(payload, config=config)
+        answer = (result.get("response") or {}).get("answer")
+
+        if not answer:
+            route = result.get("route") or result.get("query_path")
+            if route in ("MEMORY", "SAVE_MEMORY"):
+                answer = "I have saved this information for you."
+
+            elif route == "CHAT":
+                answer = "I am here to help you."
+
+            else:
+                answer = "I could not find enough information to answer your question."
+
         confidence_score = result.get("confidence_score")
         if confidence_score is None:
             confidence_score = 0.5
@@ -159,6 +229,12 @@ def normalize_api_response(resp: Dict[str, Any]) -> Dict[str, Any]:
         citations = resp.get("policy_citations") or []
         out["policy_citations"] = citations
         out["sql_query_executed"] = resp.get("sql_query_executed") or ""
+    elif qp in ("MEMORY", "SAVE_MEMORY"):
+        out["query_path"] = "MEMORY"
+        out["document_name"] = "NA"
+        out["policy_citations"] = []
+        out["sql_query_executed"] = "NA"
+
     else:
         # treat as RAG by default
         out["query_path"] = "RAG"

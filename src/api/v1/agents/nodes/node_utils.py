@@ -1,7 +1,7 @@
 from typing import Any, Dict, List
-import os
 import logging
-from langchain_openai import ChatOpenAI
+
+from src.core.llm_factory import get_llm
 
 logger = logging.getLogger(__name__)
 
@@ -24,17 +24,9 @@ class Doc:
 
 
 def _get_llm():
-    """
-    Return a configured ChatOpenAI LLM client.
-
-    Builds the LLM client from environment variables.
-    """
+    """Return the active provider-backed LLM client."""
     try:
-        model = os.getenv("OPENAI_CHAT_MODEL")
-        api_key = os.getenv("OPENAI_API_KEY")
-        if not model or not api_key:
-            logger.warning("OPENAI_CHAT_MODEL or OPENAI_API_KEY not set")
-        return ChatOpenAI(model=model, api_key=api_key)
+        return get_llm()
     except Exception:
         logger.exception("Failed to initialize LLM client")
         raise

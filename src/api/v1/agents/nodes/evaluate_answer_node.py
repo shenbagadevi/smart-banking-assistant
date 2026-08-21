@@ -60,7 +60,9 @@ def evaluate_answer_node(state: Dict[str, Any]) -> Dict[str, Any]:
             state.get("confidence_score"),
             retry_count,
         )
-
+        if state.get("route") == "CHAT":
+            logger.info("Skipping evaluation for CHAT response")
+            return {**state, "evaluation": "PASS"}
         if settings.DEMO_MODE:
             logger.info("DEMO_MODE active - skipping evaluation")
             answer = (state.get("response") or {}).get("answer", "")

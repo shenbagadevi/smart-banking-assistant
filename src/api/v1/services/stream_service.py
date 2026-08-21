@@ -1,6 +1,12 @@
 import logging
 from typing import Optional
 
+from src.api.v1.services.execution_registry import (
+    cancel_request,
+    is_request_active,
+    unregister_request,
+)
+
 logger = logging.getLogger(__name__)
 
 # Simple in-memory cancellation registry keyed by correlation_id.
@@ -12,6 +18,7 @@ def request_cancel(correlation_id: Optional[str]) -> None:
     if not correlation_id:
         return
     _CANCEL_FLAGS[str(correlation_id)] = True
+    cancel_request(correlation_id)
 
 
 def is_cancelled(correlation_id: Optional[str]) -> bool:
@@ -24,6 +31,7 @@ def clear_cancel(correlation_id: Optional[str]) -> None:
     if not correlation_id:
         return
     _CANCEL_FLAGS.pop(str(correlation_id), None)
+    unregister_request(correlation_id)
 
 
 def stream_response(answer: str, correlation_id: Optional[str] = None):
@@ -35,7 +43,6 @@ def stream_response(answer: str, correlation_id: Optional[str] = None):
             answer = ""
 
         for token in (answer or "").split():
-            # Check cancellation before yielding each token
             try:
                 if is_cancelled(correlation_id):
                     logger.info(
@@ -51,3 +58,7 @@ def stream_response(answer: str, correlation_id: Optional[str] = None):
     except Exception:
         logger.exception("Streaming failed")
         yield "data: [ERROR] Unable to generate response\n\n"
+
+
+def active_request_count() -> int:
+    return sum(1 for key in list(_CANCEL_FLAGS.keys()) if _CANCEL_FLAGS.get(key))

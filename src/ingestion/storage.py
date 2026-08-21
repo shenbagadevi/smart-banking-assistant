@@ -1,22 +1,20 @@
 import logging
 from collections import Counter
 
-from langchain_openai import OpenAIEmbeddings
 from pathlib import Path
 from src.core.config import (
     EMBEDDING_BATCH_SIZE,
     OPENAI_EMBEDDING_MODEL,
     EMBEDDING_DIMENSION,
 )
+from src.core.embedding_factory import get_embeddings
 from src.api.v1.tools.rag_tool import get_vector_store
 from src.core.database import insert_chunks, get_or_create_document, get_connection
 from langchain_core.documents import Document
 
 logger = logging.getLogger(__name__)
 
-embedding_model = OpenAIEmbeddings(
-    model=OPENAI_EMBEDDING_MODEL,
-)
+embedding_model = get_embeddings()
 
 
 def store_chunks(

@@ -16,6 +16,12 @@ class RAGState(TypedDict, total=False):
     correlation_id: str
 
     route: Optional[str]
+    request_id: Optional[str]
+    guardrail_blocked: bool
+    input_guardrail_passed: bool
+    output_guardrail_passed: bool
+    pii_detected: bool
+    sanitized_query: str
 
     memory_context: str
 
