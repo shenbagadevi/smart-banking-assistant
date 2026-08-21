@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 
 from src.api.v1.routes.document_routes import router as document_router
+from src.api.v1.routes.query_route import router as query_router
 from src.core.config import (
     API_PREFIX,
     PROJECT_NAME,
@@ -15,5 +16,9 @@ app = FastAPI(
 
 app.include_router(
     document_router,
+    prefix=API_PREFIX,
+)
+app.include_router(
+    query_router,
     prefix=API_PREFIX,
 )

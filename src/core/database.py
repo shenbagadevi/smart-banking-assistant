@@ -1,24 +1,31 @@
 import logging
+import re
+import uuid
 
 import psycopg
 
 from psycopg.types.json import Json
 
-from src.core.config import (
-    PG_CONNECTION_STRING,
-)
+from src.core.config import PG_CONNECTION_STRING
 
 logger = logging.getLogger(__name__)
+
+
+def validate_database_config() -> str:
+    """Check that a PostgreSQL connection string is present before connecting."""
+    if not PG_CONNECTION_STRING:
+        raise RuntimeError(
+            "Database configuration missing. Set PG_CONNECTION_STRING or PG_RDBMS_CONNECTION_STRING before starting the app."
+        )
+    return PG_CONNECTION_STRING
 
 
 def get_connection():
     """
     Create a PostgreSQL connection.
     """
-
-    return psycopg.connect(
-        PG_CONNECTION_STRING,
-    )
+    connection_string = validate_database_config()
+    return psycopg.connect(connection_string)
 
 
 def get_or_create_document(
@@ -34,6 +41,8 @@ def get_or_create_document(
     try:
 
         connection = get_connection()
+
+        source_path = str(source_path)
 
         with connection.cursor() as cursor:
 
@@ -97,14 +106,41 @@ def insert_chunks(
 
     try:
 
+        # Validate document_id is a UUID string
+        try:
+            uuid_obj = uuid.UUID(str(document_id))
+            logger.info("DOCUMENT_ID VALIDATED | document_id=%s", str(uuid_obj))
+        except Exception:
+            logger.error("Invalid document_id (not a UUID): %s", document_id)
+            raise
+
         connection = get_connection()
 
         with connection.cursor() as cursor:
 
-            for chunk, embedding in zip(
-                chunks,
-                embeddings,
-            ):
+            for chunk, embedding in zip(chunks, embeddings):
+
+                chunk_id = chunk.get("chunk_id")
+                # Validate chunk_id is a UUID
+                try:
+                    uuid_obj = uuid.UUID(str(chunk_id))
+                    logger.info("CHUNK_ID VALIDATED | chunk_id=%s", str(uuid_obj))
+                except Exception:
+                    logger.error("Invalid chunk_id (not a UUID): %s", chunk_id)
+                    raise
+
+                # Attach document_id into metadata for downstream use
+                chunk["metadata"]["document_id"] = document_id
+
+                # Debug insert mapping
+                content_hash = (chunk.get("metadata") or {}).get("content_hash")
+                logger.debug(
+                    "CHUNK_INSERT_DEBUG: document_id=%s chunk_id=%s chunk_id_type=%s content_hash=%s",
+                    document_id,
+                    chunk_id,
+                    type(chunk_id),
+                    content_hash,
+                )
 
                 cursor.execute(
                     """
@@ -115,14 +151,15 @@ def insert_chunks(
                         document_name,
                         chunk_type,
                         content,
-                        page_number,
+                        source_page,
                         section,
                         embedding,
-                        metadata
+                        metadata,
+                        image_path
                     )
                     VALUES
                     (
-                        %s,%s,%s,%s,%s,%s,%s,%s,%s
+                        %s,%s,%s,%s,%s,%s,%s,%s,%s,%s
                     )
                     """,
                     (
@@ -131,10 +168,11 @@ def insert_chunks(
                         chunk["document_name"],
                         chunk["chunk_type"],
                         chunk["content"],
-                        chunk["page"],
-                        chunk["section"],
+                        chunk.get("source_page"),
+                        chunk.get("section"),
                         embedding,
                         Json(chunk["metadata"]),
+                        chunk["metadata"].get("image_path"),
                     ),
                 )
 
@@ -151,5 +189,33 @@ def insert_chunks(
 
     finally:
 
+        if connection:
+            connection.close()
+
+
+def delete_chunks_for_document(document_id: str) -> None:
+    """
+    Delete all chunks associated with a document. Useful to avoid duplicate
+    chunks when re-ingesting an updated document.
+    """
+    connection = None
+    try:
+        connection = get_connection()
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                DELETE FROM knowledge_chunks
+                WHERE document_id = %s
+                """,
+                (document_id,),
+            )
+        connection.commit()
+        logger.info("Deleted existing chunks for document_id=%s", document_id)
+    except Exception:
+        if connection:
+            connection.rollback()
+        logger.exception("Unable to delete chunks for document_id=%s", document_id)
+        raise
+    finally:
         if connection:
             connection.close()

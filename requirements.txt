@@ -1,21 +1,53 @@
  
 # Dependencies:
 
- uv add python-dotenv 
- uv add fastapi
-
-  uv add docling
-
-  uv add langchain-openai langchain-core
-
-  uv add langchain-text-splitters
-
-  uv add langchain-postgres
-
-  uv add psycopg[binary] pgvector
-
-  uv add uvicorn
-
+uv add python-dotenv
+uv add fastapi
+uv add docling
+uv add langchain-openai langchain-core
+uv add langchain-text-splitters
+uv add langchain-postgres
+uv add psycopg[binary] pgvector
+uv add uvicorn
 uv add python-multipart
+uv add docx2pdf
+uv add langgraph
+uv add langgraph-checkpoint
+uv add cohere
+uv add langsmith pdfplumber
+uv add mem0ai guardrails-ai
 
-  uv run uvicorn main:app --reload
+uv add python-dotenv fastapi docling langchain-openai langchain-core langchain-text-splitters langchain-postgres langchain-community "psycopg[binary]" pgvector uvicorn python-multipart docx2pdf langgraph langgraph-checkpoint cohere langsmith pdfplumber mem0ai guardrails-ai
+
+# Local run command:
+# uv run uvicorn main:app --reload
+
+
+uv add mem0ai guardrails-ai
+
+guardrails configure
+guardrails hub install hub://guardrails/guardrails_pii
+guardrails hub install hub://guardrails/toxic_language
+guardrails hub install hub://guardrails/detect_pii
+guardrails hub install hub://guardrails/prompt_injection_detector
+guardrails hub install hub://guardrails/response_evaluator
+guardrails hub install hub://guardrails/gibberish_text
+
+
+https://guardrailsai.com/hub
+https://guardrailsai.com/hub/keys
+
+
+(reranking-rag-plus) PS C:\agentic_ai_course\reranking_rag_plus> guardrails configure
+Enable anonymous metrics reporting? [Y/n]: n
+Do you wish to use remote inferencing? [Y/n]: y
+
+Enter API Key below 👉 You can find your API Key at https://guardrailsai.com/hub/keys
+
+API Key: ey
+
+Sign up at https://app.mem0.ai
+API Keys → create a key (starts with m0-)
+
+
+uv add langchain-ollama

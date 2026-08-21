@@ -1,16 +1,15 @@
 import logging
-import sys
+import os
 
 
-def configure_logger() -> None:
-    """
-    Configure application logging.
-    """
+def configure_logger():
+    os.makedirs("logs", exist_ok=True)
 
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
         handlers=[
-            logging.StreamHandler(sys.stdout),
+            logging.FileHandler("logs/banking_assistant.log"),
+            logging.StreamHandler(),
         ],
     )
