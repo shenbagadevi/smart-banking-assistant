@@ -27,29 +27,53 @@ def _normalize_product_name(value: str | None) -> str:
 def build_chunk_report(document_path: Path) -> dict:
     parsed_elements = parse_document(document_path)
     chunks = prepare_chunks(parsed_elements, document_path.name)
-
     product_distribution = Counter()
+    known_pages = 0
+    unknown_pages = 0
+
+    # Validation counters
+    heading_only = 0
+    metadata_errors = 0
+    category_mismatches = 0
+    too_short = 0
+
+    MIN_CONTENT_CHARS = 20
+
     for chunk in chunks:
         metadata = chunk.get("metadata") or {}
-        product_name = _normalize_product_name(metadata.get("product_name"))
-        if product_name in {
-            "Home Loan",
-            "Personal Loan",
-            "Credit Card",
-            "Fixed Deposit",
-        }:
-            product_distribution[product_name] += 1
+        product = metadata.get("product") or metadata.get("product_name")
+        if product in {"Home Loan", "Personal Loan", "Credit Card", "Fixed Deposit"}:
+            product_distribution[product] += 1
         else:
             product_distribution["Unknown"] += 1
 
-    known_pages = 0
-    unknown_pages = 0
-    for chunk in chunks:
-        page = (chunk.get("metadata") or {}).get("source_page")
+        page = metadata.get("page_number") or metadata.get("source_page")
         if page in (None, "unknown"):
             unknown_pages += 1
         else:
             known_pages += 1
+
+        content = (chunk.get("content") or "").strip()
+        # Heading-only detection: if content equals section/heading/sub_section
+        if content and (
+            content == (metadata.get("heading") or "")
+            or content == (metadata.get("section") or "")
+            or content == (metadata.get("sub_section") or "")
+        ):
+            heading_only += 1
+
+        # Metadata errors
+        if not metadata.get("section") or not metadata.get("heading"):
+            metadata_errors += 1
+
+        # Category mismatch: Fixed Deposit must not be loan
+        if (product == "Fixed Deposit") and (
+            metadata.get("product_category") == "loan"
+        ):
+            category_mismatches += 1
+
+        if len(content) < MIN_CONTENT_CHARS:
+            too_short += 1
 
     report = {
         "chunks": chunks,
@@ -65,6 +89,10 @@ def build_chunk_report(document_path: Path) -> dict:
                 "known_pages": known_pages,
                 "unknown_pages": unknown_pages,
             },
+            "heading_only_chunks": heading_only,
+            "metadata_errors": metadata_errors,
+            "category_mismatches": category_mismatches,
+            "too_short_chunks": too_short,
         },
     }
     return report
@@ -109,6 +137,14 @@ def print_metadata_report(report: dict) -> None:
     print("\nSource page coverage:")
     print(f"Known pages: {summary['source_page_coverage']['known_pages']}")
     print(f"Unknown pages: {summary['source_page_coverage']['unknown_pages']}")
+
+    print("\nValidation summary:")
+    print(f"Heading-only chunks: {summary.get('heading_only_chunks', 0)}")
+    print(
+        f"Metadata errors (missing heading/section): {summary.get('metadata_errors', 0)}"
+    )
+    print(f"Category mismatches: {summary.get('category_mismatches', 0)}")
+    print(f"Too-short chunks (< threshold): {summary.get('too_short_chunks', 0)}")
 
 
 def main() -> None:

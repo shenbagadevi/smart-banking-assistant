@@ -28,6 +28,10 @@ uv add mem0ai guardrails-ai
 guardrails configure
 guardrails hub install hub://guardrails/guardrails_pii
 guardrails hub install hub://guardrails/toxic_language
+guardrails hub install hub://guardrails/detect_pii
+guardrails hub install hub://guardrails/prompt_injection_detector
+guardrails hub install hub://guardrails/response_evaluator
+guardrails hub install hub://guardrails/gibberish_text
 
 
 https://guardrailsai.com/hub
@@ -44,3 +48,6 @@ API Key: ey
 
 Sign up at https://app.mem0.ai
 API Keys → create a key (starts with m0-)
+
+
+uv add langchain-ollama
